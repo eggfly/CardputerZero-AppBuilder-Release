@@ -52,8 +52,18 @@ jobs:
       - name: Checkout AppBuilder
         uses: actions/checkout@v4
 
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-aarch64-cross-v1
+
       - name: Install build dependencies
         run: |
+          if [ -d ~/apt-cache ] && [ "$(ls ~/apt-cache/*.deb 2>/dev/null | wc -l)" -gt 0 ]; then
+            echo "Restoring apt cache..."
+            sudo cp ~/apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          fi
           sudo apt-get update
           sudo apt-get install -y \
             python3 python3-pip \
@@ -61,6 +71,8 @@ jobs:
             dpkg-dev \
             libffi-dev
           pip3 install parse scons requests tqdm
+          mkdir -p ~/apt-cache
+          cp /var/cache/apt/archives/*.deb ~/apt-cache/ 2>/dev/null || true
 
       - name: Clone user repository
         run: |
@@ -70,6 +82,39 @@ jobs:
           else
             git clone --recursive --depth=1 -b "$BRANCH" "${{ inputs.repo_url }}" /tmp/user-repo
           fi
+
+      - name: Compute cache keys
+        id: cache-keys
+        working-directory: /tmp/user-repo
+        run: |
+          CONFIG_HASH=$(sha256sum "${{ matrix.project.path }}/config_defaults.mk" | cut -c1-16)
+          echo "config_hash=$CONFIG_HASH" >> "$GITHUB_OUTPUT"
+
+          SDK_COMMIT=$(git -C SDK rev-parse HEAD 2>/dev/null || echo "no-sdk")
+          echo "sdk_commit=$SDK_COMMIT" >> "$GITHUB_OUTPUT"
+
+          LVGL_COMMIT=$(grep -oP "git_commit\s*=\s*'[a-f0-9]+'" SDK/components/lvgl_component/SConstruct | tail -1 | grep -oP "[a-f0-9]{40}" || echo "unknown")
+          echo "lvgl_commit=$LVGL_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Cache LVGL source
+        uses: actions/cache@v4
+        with:
+          path: /tmp/user-repo/SDK/github_source/lvgl
+          key: lvgl-src-${{ steps.cache-keys.outputs.lvgl_commit }}
+
+      - name: Cache static_lib BSP
+        uses: actions/cache@v4
+        with:
+          path: /tmp/user-repo/${{ matrix.project.path }}/static_lib
+          key: static-lib-${{ matrix.project.path }}-${{ steps.cache-keys.outputs.sdk_commit }}
+
+      - name: Cache SCons build objects
+        uses: actions/cache@v4
+        with:
+          path: /tmp/user-repo/${{ matrix.project.path }}/build
+          key: scons-${{ matrix.project.path }}-${{ steps.cache-keys.outputs.config_hash }}-${{ steps.cache-keys.outputs.sdk_commit }}-${{ github.sha }}
+          restore-keys: |
+            scons-${{ matrix.project.path }}-${{ steps.cache-keys.outputs.config_hash }}-${{ steps.cache-keys.outputs.sdk_commit }}-
 
       - name: Build ${{ matrix.project.app_name }}
         working-directory: /tmp/user-repo/${{ matrix.project.path }}
