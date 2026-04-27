@@ -1,0 +1,129 @@
+name: Build DEB Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "Git repository URL (HTTP, e.g. https://github.com/dianjixz/M5CardputerZero-UserDemo.git)"
+        required: true
+        type: string
+      project_path:
+        description: "Relative path to the project directory (e.g. projects/UserDemo)"
+        required: true
+        type: string
+      branch:
+        description: "Branch to checkout"
+        required: true
+        default: "main"
+        type: string
+      package_name:
+        description: "DEB package name (lowercase, e.g. userdemo)"
+        required: true
+        type: string
+      package_version:
+        description: "Package version"
+        required: true
+        default: "0.1"
+        type: string
+      app_display_name:
+        description: "App display name in launcher (e.g. UserDemo)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout AppBuilder
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            dpkg-dev \
+            libffi-dev
+          pip3 install parse scons requests tqdm
+
+      - name: Clone user repository
+        run: |
+          git clone --recursive --depth=1 -b "${{ inputs.branch }}" \
+            "${{ inputs.repo_url }}" /tmp/user-repo
+
+      - name: Build (cross-compile for aarch64)
+        working-directory: /tmp/user-repo/${{ inputs.project_path }}
+        env:
+          CardputerZero: "y"
+        run: |
+          scons -j$(nproc)
+
+      - name: Detect binary name
+        id: detect
+        working-directory: /tmp/user-repo/${{ inputs.project_path }}
+        run: |
+          BIN=$(find dist/ -maxdepth 1 -type f -executable | head -1)
+          if [ -z "$BIN" ]; then
+            echo "::error::No executable found in dist/"
+            exit 1
+          fi
+          BIN_NAME=$(basename "$BIN")
+          echo "bin_name=$BIN_NAME" >> "$GITHUB_OUTPUT"
+          echo "Found binary: $BIN_NAME"
+
+      - name: Package DEB
+        env:
+          PKG_NAME: ${{ inputs.package_name }}
+          PKG_VERSION: ${{ inputs.package_version }}
+          BIN_NAME: ${{ steps.detect.outputs.bin_name }}
+          APP_NAME: ${{ inputs.app_display_name || inputs.package_name }}
+          DIST_DIR: /tmp/user-repo/${{ inputs.project_path }}/dist
+        run: |
+          python3 scripts/pack_deb.py \
+            --package-name "$PKG_NAME" \
+            --version "$PKG_VERSION" \
+            --bin-name "$BIN_NAME" \
+            --app-name "$APP_NAME" \
+            --src-folder "$DIST_DIR" \
+            --output-dir /tmp/deb-output
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_name }}_${{ inputs.package_version }}_arm64
+          path: /tmp/deb-output/*.deb
+          retention-days: 90
+
+      - name: Job summary
+        run: |
+          DEB_FILE=$(ls /tmp/deb-output/*.deb | head -1)
+          DEB_NAME=$(basename "$DEB_FILE")
+          DEB_SIZE=$(du -h "$DEB_FILE" | cut -f1)
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Build Result
+
+          | Item | Value |
+          |------|-------|
+          | Repository | \`${{ inputs.repo_url }}\` |
+          | Branch | \`${{ inputs.branch }}\` |
+          | Project | \`${{ inputs.project_path }}\` |
+          | Binary | \`${{ steps.detect.outputs.bin_name }}\` |
+          | Package | \`${DEB_NAME}\` |
+          | Size | ${DEB_SIZE} |
+          | Architecture | arm64 (aarch64 cross-compiled) |
+
+          Download the .deb from the **Artifacts** section below.
+
+          ### Install on device
+          \`\`\`bash
+          scp ${DEB_NAME} pi@<device-ip>:/tmp/
+          ssh pi@<device-ip> "sudo dpkg -i /tmp/${DEB_NAME}"
+          \`\`\`
+          EOF
