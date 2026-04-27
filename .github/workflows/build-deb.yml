@@ -34,7 +34,7 @@ jobs:
             git clone --recursive --depth=1 -b "$BRANCH" "${{ inputs.repo_url }}" /tmp/user-repo
           fi
 
-      - name: Scan for appbuilder.json
+      - name: Scan for app-builder.json
         id: scan
         run: |
           python3 scripts/discover_projects.py /tmp/user-repo
@@ -75,6 +75,7 @@ jobs:
         working-directory: /tmp/user-repo/${{ matrix.project.path }}
         env:
           CardputerZero: "y"
+          CONFIG_REPO_AUTOMATION: "y"
         run: |
           scons -j$(nproc)
 
