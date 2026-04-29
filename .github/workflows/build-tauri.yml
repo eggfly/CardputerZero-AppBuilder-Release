@@ -7,13 +7,19 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: "Upstream branch to build (leave empty for default: dev)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
 
 env:
   UPSTREAM_REPO: m5stack/CardputerZero-AppBuilder
-  UPSTREAM_BRANCH: dev
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'dev' }}
 
 jobs:
   build:
@@ -70,15 +76,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: ${{ github.ref_type == 'tag' && format('CardputerZero AppBuilder {0}', github.ref_name) || '' }}
-          releaseBody: "See the assets below to download and install."
-          releaseDraft: ${{ github.ref_type == 'tag' }}
-          prerelease: false
 
       - name: Upload artifacts
-        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
           name: cardputerzero-appbuilder-${{ matrix.target }}
@@ -90,3 +89,28 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
           retention-days: 30
+
+  prerelease:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get timestamp
+        id: ts
+        run: echo "tag=build-$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: Create prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ts.outputs.tag }}
+          name: "Pre-release ${{ steps.ts.outputs.tag }} (upstream: ${{ env.UPSTREAM_BRANCH }})"
+          body: |
+            Automated pre-release build from upstream `${{ env.UPSTREAM_REPO }}` branch `${{ env.UPSTREAM_BRANCH }}`.
+
+            Built at: ${{ steps.ts.outputs.tag }}
+          prerelease: true
+          files: artifacts/**/*

@@ -8,17 +8,22 @@ on:
         required: true
         type: string
       branch:
-        description: "Branch (leave empty for default branch)"
+        description: "Branch of user repo (leave empty for default branch)"
+        required: false
+        default: ""
+        type: string
+      upstream_branch:
+        description: "Upstream AppBuilder branch (leave empty for default: dev)"
         required: false
         default: ""
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   UPSTREAM_REPO: m5stack/CardputerZero-AppBuilder
-  UPSTREAM_BRANCH: dev
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'dev' }}
 
 jobs:
   discover:
@@ -174,3 +179,30 @@ jobs:
           ssh pi@<device-ip> "sudo dpkg -i /tmp/${DEB_NAME}"
           \`\`\`
           EOF
+
+  prerelease:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get timestamp
+        id: ts
+        run: echo "tag=deb-$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: Create prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ts.outputs.tag }}
+          name: "DEB Pre-release ${{ steps.ts.outputs.tag }}"
+          body: |
+            Automated DEB build.
+
+            - User repo: `${{ inputs.repo_url }}`
+            - User branch: `${{ inputs.branch || '(default)' }}`
+            - Upstream: `${{ env.UPSTREAM_REPO }}` branch `${{ env.UPSTREAM_BRANCH }}`
+          prerelease: true
+          files: artifacts/**/*
